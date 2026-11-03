@@ -1,0 +1,20 @@
+export type RecordItem={id:string,url:string,title:string,time:number,source:string,category:string,domain:string};
+export type Product={name:string,url:string,category:string,price?:string};
+const rules: [string,RegExp][]=[['Technology',/laptop|computer|camera|software|electronics|bestbuy|github|apple\.com/i],['Style',/fashion|clothing|shoes|apparel|nike|adidas|nordstrom/i],['Home & design',/furniture|decor|kitchen|ikea|wayfair|design/i],['Outdoors',/camping|hiking|outdoor|rei\.com|patagonia/i],['Travel',/flight|hotel|travel|airbnb|booking\.com/i],['Shopping',/amazon|walmart|target\.com|shop|product|cart|checkout|order/i]];
+const sensitive=/health|medical|cancer|therapy|religio|church|politic|democrat|republican|sexual|pregnan|diagnos|pharma|mosque|synagogue/i;
+export function category(text:string){return sensitive.test(text)?'Unclassified':rules.find(([,re])=>re.test(text))?.[0]||'Unclassified'}
+export function safeURL(value:unknown){try{const u=new URL(String(value));if(!['http:','https:'].includes(u.protocol))return null;u.username='';u.password='';u.search='';u.hash='';return u}catch{return null}}
+function csv(text:string){const rows:string[][]=[];let row:string[]=[],field='',quoted=false;for(let i=0;i<text.length;i++){let c=text[i];if(c==='"'){if(quoted&&text[i+1]==='"'){field+='"';i++}else quoted=!quoted}else if(c===','&&!quoted){row.push(field);field=''}else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&text[i+1]==='\n')i++;row.push(field);if(row.some(Boolean))rows.push(row);row=[];field=''}else field+=c}if(quoted)throw Error('Unclosed CSV quote');row.push(field);if(row.some(Boolean))rows.push(row);const head=rows.shift()||[];return rows.map(r=>Object.fromEntries(head.map((h,i)=>[h.trim(),r[i]||''])))}
+export function parse(text:string,name:string):{records:RecordItem[],products:Product[],skipped:number}{
+ const raw=name.toLowerCase().endsWith('.csv')?csv(text):JSON.parse(text);let list:any[]=Array.isArray(raw)?raw:raw['Browser History']||raw.history||raw.records||raw.products||[];
+ if(!Array.isArray(list))throw Error('Expected a JSON array or recognized export');let records:RecordItem[]=[],products:Product[]=[],skipped=0;
+ for(const r of list){if(r.mapping){for(const n of Object.values(r.mapping) as any[]){const m=n.message;if(m?.author?.role==='user'){// Only explicit URLs in the user's own plain text; quotes are excluded.
+ const content=(m.content?.parts||[]).filter((x:unknown)=>typeof x==='string').join('\n').split('\n').filter((s:string)=>!s.trim().startsWith('>')).join('\n');
+ for(const url of content.match(/https?:\/\/[^\s<>"']+/g)||[]){const u=safeURL(url);if(u&&m.create_time)records.push(make(u,'User-provided link',m.create_time*1000,name))}}}continue}
+ const u=safeURL(r.url||r.product_url||r.titleUrl);if(!u){skipped++;continue}if(r.name&&r.category){products.push({name:String(r.name).slice(0,200),url:u.href,category:String(r.category),price:r.price?String(r.price):undefined});continue}
+ let t=r.time_usec?Number(r.time_usec)/1000:r.lastVisitTime||r.timestamp||r.time||r.date;const time=typeof t==='number'?t:Date.parse(t);if(!Number.isFinite(time)||time<=0){skipped++;continue}records.push(make(u,String(r.title||'Untitled page'),time,name));}
+ return {records,products,skipped};
+}
+function make(u:URL,title:string,time:number,source:string):RecordItem{return{id:crypto.randomUUID(),url:u.href,title:title.slice(0,240),time,source,domain:u.hostname.replace(/^www\./,''),category:category(u.hostname+' '+u.pathname+' '+title)}}
+export function analyze(records:RecordItem[]){const groups=new Map<string,RecordItem[]>();for(const r of records)groups.set(r.category,[...(groups.get(r.category)||[]),r]);return [...groups].filter(([k])=>k!=='Unclassified').map(([name,evidence])=>({name,evidence,score:Math.round(100*evidence.length/Math.max(1,records.length)),confidence:evidence.length>=10?'Moderate':evidence.length>=3?'Low':'INSUFFICIENT DATA'})).sort((a,b)=>b.score-a.score)}
+export function dedupe(records:RecordItem[]){return [...new Map(records.map(r=>[r.url+'|'+r.time,r])).values()]}

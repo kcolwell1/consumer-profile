@@ -1,0 +1,1 @@
+chrome.runtime.onMessage.addListener((m,s,respond)=>{if(s.id!==chrome.runtime.id)return false;if(m.type==='disconnect'){chrome.permissions.remove({permissions:['history']}).then(removed=>respond({removed}));return true}return false});
